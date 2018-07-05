@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"go/build"
+	gobuild "go/build"
 	"go/doc"
 	"go/parser"
 	"go/scanner"
@@ -32,7 +32,7 @@ import (
 	gbuild "github.com/gopherjs/gopherjs/build"
 	"github.com/gopherjs/gopherjs/compiler"
 	"github.com/gopherjs/gopherjs/internal/sysutil"
-	"github.com/kisielk/gotool"
+	build "github.com/gopherjs/gopherjs/vgobuild"
 	"github.com/neelance/sourcemap"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -54,7 +54,7 @@ func init() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	gopaths := filepath.SplitList(build.Default.GOPATH)
+	gopaths := filepath.SplitList(gobuild.Default.GOPATH)
 	if len(gopaths) == 0 {
 		fmt.Fprintf(os.Stderr, "$GOPATH not set. For more details see: go help gopath\n")
 		os.Exit(1)
@@ -122,11 +122,14 @@ func main() {
 
 				// Expand import path patterns.
 				patternContext := gbuild.NewBuildContext("", options.BuildTags)
-				pkgs := (&gotool.Context{BuildContext: *patternContext}).ImportPaths(args)
+				pkgs, err := build.ImportPaths(patternContext, args)
+				if err != nil {
+					return err
+				}
 
 				for _, pkgPath := range pkgs {
 					if s.Watcher != nil {
-						pkg, err := gbuild.NewBuildContext(s.InstallSuffix(), options.BuildTags).Import(pkgPath, "", build.FindOnly)
+						pkg, err := build.Import(gbuild.NewBuildContext(s.InstallSuffix(), options.BuildTags), pkgPath, "", gobuild.FindOnly)
 						if err != nil {
 							return err
 						}
@@ -178,7 +181,10 @@ func main() {
 			err := func() error {
 				// Expand import path patterns.
 				patternContext := gbuild.NewBuildContext("", options.BuildTags)
-				pkgs := (&gotool.Context{BuildContext: *patternContext}).ImportPaths(args)
+				pkgs, err := build.ImportPaths(patternContext, args)
+				if err != nil {
+					return err
+				}
 
 				if cmd.Name() == "get" {
 					goGet := exec.Command("go", append([]string{"get", "-d", "-tags=js"}, pkgs...)...)
@@ -305,8 +311,12 @@ func main() {
 		options.BuildTags = strings.Fields(tags)
 		err := func() error {
 			// Expand import path patterns.
+			var err error
 			patternContext := gbuild.NewBuildContext("", options.BuildTags)
-			args = (&gotool.Context{BuildContext: *patternContext}).ImportPaths(args)
+			args, err = build.ImportPaths(patternContext, args)
+			if err != nil {
+				return err
+			}
 
 			if *compileOnly && len(args) > 1 {
 				return errors.New("cannot use -c flag with multiple packages")
@@ -352,7 +362,7 @@ func main() {
 				}
 
 				if err := collectTests(&gbuild.PackageData{
-					Package: &build.Package{
+					Package: &gobuild.Package{
 						ImportPath: pkg.ImportPath,
 						Dir:        pkg.Dir,
 						GoFiles:    append(pkg.GoFiles, pkg.TestGoFiles...),
@@ -365,7 +375,7 @@ func main() {
 				}
 
 				if err := collectTests(&gbuild.PackageData{
-					Package: &build.Package{
+					Package: &gobuild.Package{
 						ImportPath: pkg.ImportPath + "_test",
 						Dir:        pkg.Dir,
 						GoFiles:    pkg.XTestGoFiles,
@@ -481,7 +491,7 @@ func main() {
 	cmdServe.Flags().StringVarP(&addr, "http", "", ":8080", "HTTP bind address to serve")
 	cmdServe.Run = func(cmd *cobra.Command, args []string) {
 		options.BuildTags = strings.Fields(tags)
-		dirs := append(filepath.SplitList(build.Default.GOPATH), build.Default.GOROOT)
+		dirs := append(filepath.SplitList(gobuild.Default.GOPATH), gobuild.Default.GOROOT)
 		var root string
 
 		if len(args) > 1 {
@@ -805,12 +815,12 @@ func runTestDir(p *gbuild.PackageData) string {
 }
 
 type testFuncs struct {
-	BuildContext *build.Context
+	BuildContext *gobuild.Context
 	Tests        []testFunc
 	Benchmarks   []testFunc
 	Examples     []testFunc
 	TestMain     *testFunc
-	Package      *build.Package
+	Package      *gobuild.Package
 	ImportTest   bool
 	NeedTest     bool
 	ImportXtest  bool
