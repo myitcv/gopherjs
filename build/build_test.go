@@ -2,11 +2,12 @@ package build
 
 import (
 	"fmt"
-	gobuild "go/build"
 	"go/token"
 	"strconv"
 	"strings"
 	"testing"
+
+	gobuild "github.com/gopherjs/gopherjs/vgobuild"
 
 	"github.com/kisielk/gotool"
 	"github.com/shurcooL/go/importgraphutil"

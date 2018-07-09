@@ -47,6 +47,15 @@ jobs:
           go env
 
       - run: |
+          # Install vgo
+          go get -u golang.org/x/vgo
+          pushd $(go list -f "{{.Dir}}" golang.org/x/vgo) > /dev/null
+          git checkout -qf $VGO_COMMIT
+          go install
+          popd > /dev/null
+          vgo version
+
+      - run: |
           # Per https://github.com/gopherjs/gopherjs/blob/master/doc/syscalls.md.
           npm install --global node-gyp
           cd node-syscall && node-gyp rebuild && mkdir -p $HOME/.node_libraries/ && cp build/Release/syscall.node $HOME/.node_libraries/syscall.node
