@@ -1,4 +1,4 @@
-module github.com/gopherjs/gopherjs
+module github.com/gopherjs/gopherjs/v11
 
 require (
 	github.com/fsnotify/fsnotify v1.4.7
@@ -17,8 +17,14 @@ require (
 )
 
 replace (
-	// branch js_submodule
-	github.com/gopherjs/gopherjs/js => github.com/myitcv/gopherjs/js v0.0.0-20180813130410-80a55d72fc42
+	// branch js_use_gopherjs - required because the resolution of
+	// github.com/myitcv/gopherjs/js will walk via github.com/myitcv/gopherjs
+	// and we need to tell the resolver where to go for github.com/myitcv/gopherjs.
+	// js_use_gopherjs is fine
+	github.com/gopherjs/gopherjs => github.com/myitcv/gopherjs v0.0.0-20180813154419-5cca94e93813
+
+	// branch js_use_gopherjs
+	github.com/gopherjs/gopherjs/js => github.com/myitcv/gopherjs/js v0.0.0-20180813154419-5cca94e93813
 
 	// branch latest
 	github.com/shurcooL/vfsgen => github.com/myitcv/vfsgen v0.0.0-20180812213343-816be997bc25

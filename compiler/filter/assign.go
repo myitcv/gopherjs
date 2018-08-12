@@ -5,7 +5,7 @@ import (
 	"go/token"
 	"go/types"
 
-	"github.com/gopherjs/gopherjs/compiler/astutil"
+	"github.com/gopherjs/gopherjs/v11/compiler/astutil"
 )
 
 func Assign(stmt ast.Stmt, info *types.Info, pkg *types.Package) ast.Stmt {

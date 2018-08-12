@@ -22,9 +22,9 @@ import (
 	"strings"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/gopherjs/gopherjs/compiler"
-	"github.com/gopherjs/gopherjs/compiler/gopherjspkg"
-	"github.com/gopherjs/gopherjs/compiler/natives"
+	"github.com/gopherjs/gopherjs/v11/compiler"
+	"github.com/gopherjs/gopherjs/v11/compiler/gopherjspkg"
+	"github.com/gopherjs/gopherjs/v11/compiler/natives"
 	"github.com/neelance/sourcemap"
 	"github.com/shurcooL/httpfs/vfsutil"
 	"golang.org/x/tools/go/buildutil"

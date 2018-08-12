@@ -1,6 +1,9 @@
 version: 2
 jobs:
   build:
+    # TODO when https://github.com/golang/go/issues/26046 is fixed we can move this
+    # back to being within the GOPATH in order that we can test Go 1.11 for both
+    # module and GOPATH mode
     working_directory: /go/gopherjs
     docker:
       # We have a custom installation of Go below so this version is (largely) irrelevant.
@@ -11,6 +14,7 @@ jobs:
       NVM_VERSION: v0.33.9
       GO_VERSION: go1.11
       NODE_VERSION: 10.0.0
+      GOFLAGS: "-mod=readonly"
 
     steps:
       - checkout
@@ -68,7 +72,7 @@ jobs:
           npm install
 
       - run: |
-          go install github.com/gopherjs/gopherjs
+          go install github.com/gopherjs/gopherjs/v11
 
       - run: |
           # run tests for js submodule
@@ -83,7 +87,7 @@ jobs:
           no_output_timeout: 30m
           command: |
               echo ">> Regenerate compiler/prelude"
-              go generate github.com/gopherjs/gopherjs/compiler/prelude
+              go generate github.com/gopherjs/gopherjs/v11/compiler/prelude
 
               echo ">> Ensure there are no variations from the git commit"
               diff -u <(echo -n) <(git status --porcelain)
@@ -95,16 +99,16 @@ jobs:
               go vet .
 
               echo ">> vet all packages except tests"
-              go vet $(go list ./... | grep -v github.com/gopherjs/gopherjs/tests)
+              go vet $(go list ./... | grep -v github.com/gopherjs/gopherjs/v11/tests)
 
               echo ">> All those packages should have // +build js."
-              diff -u <(echo "github.com/gopherjs/gopherjs/compiler/natives") <(go list ./compiler/natives/...)
+              diff -u <(echo "github.com/gopherjs/gopherjs/v11/compiler/natives") <(go list ./compiler/natives/...)
 
               echo ">> Should build successfully (can't run tests, since only client is supported)."
               gopherjs install -v net/http
 
               echo ">> Run the core gopherjs tests; exclusions take from .std_test_pkg_exclusions."
-              gopherjs test --minify -v --short github.com/gopherjs/gopherjs/js/... github.com/gopherjs/gopherjs/tests/... $(go list std | grep -v -x -f .std_test_pkg_exclusions)
+              gopherjs test --minify -v --short github.com/gopherjs/gopherjs/js/... ./tests/... $(go list std | grep -v -x -f .std_test_pkg_exclusions)
 
               echo ">> Race tests."
               go test -v -race ./...

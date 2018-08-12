@@ -15,8 +15,8 @@ import (
 	"text/template"
 	"unicode"
 
-	"github.com/gopherjs/gopherjs/compiler/analysis"
-	"github.com/gopherjs/gopherjs/compiler/typesutil"
+	"github.com/gopherjs/gopherjs/v11/compiler/analysis"
+	"github.com/gopherjs/gopherjs/v11/compiler/typesutil"
 )
 
 func (c *funcContext) Write(b []byte) (int, error) {

@@ -5,8 +5,8 @@ import (
 	"go/token"
 	"go/types"
 
-	"github.com/gopherjs/gopherjs/compiler/astutil"
-	"github.com/gopherjs/gopherjs/compiler/typesutil"
+	"github.com/gopherjs/gopherjs/v11/compiler/astutil"
+	"github.com/gopherjs/gopherjs/v11/compiler/typesutil"
 )
 
 type continueStmt struct {
