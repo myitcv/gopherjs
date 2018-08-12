@@ -2,6 +2,7 @@ module github.com/gopherjs/gopherjs
 
 require (
 	github.com/fsnotify/fsnotify v1.4.7
+	github.com/gopherjs/gopherjs/js v0.0.0
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/neelance/astrewrite v0.0.0-20160511093645-99348263ae86
 	github.com/neelance/sourcemap v0.0.0-20151028013722-8c68805598ab
@@ -15,5 +16,10 @@ require (
 	golang.org/x/tools v0.0.0-20180803180156-3c07937fe18c
 )
 
-// branch: master (latest)
-replace github.com/shurcooL/vfsgen => github.com/myitcv/vfsgen v0.0.0-20180812213343-816be997bc25
+replace (
+	// branch js_submodule
+	github.com/gopherjs/gopherjs/js => github.com/myitcv/gopherjs/js v0.0.0-20180813130410-80a55d72fc42
+
+	// branch latest
+	github.com/shurcooL/vfsgen => github.com/myitcv/vfsgen v0.0.0-20180812213343-816be997bc25
+)
