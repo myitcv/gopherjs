@@ -70,6 +70,14 @@ jobs:
       - run: |
           go install github.com/gopherjs/gopherjs
 
+      - run: |
+          # run tests for js submodule
+          cd js
+          export GOBIN=$PWD/.bin
+          export PATH=$PWD/.bin:$PATH
+          go install github.com/gopherjs/gopherjs
+          gopherjs test
+
       - run:
           # because this is a long-running test suite
           no_output_timeout: 30m
