@@ -96,7 +96,7 @@ jobs:
               gopherjs install -v net/http
 
               echo ">> Run the core gopherjs tests; exclusions take from .std_test_pkg_exclusions."
-              gopherjs test --minify -v --short github.com/gopherjs/gopherjs/tests/... $(go list std | grep -v -x -f .std_test_pkg_exclusions)
+              gopherjs test --minify -v --short github.com/gopherjs/gopherjs/js/... github.com/gopherjs/gopherjs/tests/... $(go list std | grep -v -x -f .std_test_pkg_exclusions)
 
               echo ">> Race tests."
               go test -v -race ./...

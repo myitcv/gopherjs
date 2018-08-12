@@ -1,6 +1,6 @@
 // +build js
 
-package tests_test
+package js_test
 
 import (
 	"fmt"
@@ -497,7 +497,7 @@ func TestMakeFullWrapperType(t *testing.T) {
 	}
 
 	js.Global.Call("eval", `(function(f, m) { f(m); })`).Invoke(f, js.MakeFullWrapper(m))
-	want := "github.com/gopherjs/gopherjs/tests_test.*M"
+	want := "github.com/gopherjs/gopherjs/js_test.*M"
 	if got := js.MakeFullWrapper(m).Get("$type").String(); got != want {
 		t.Errorf("wanted type string %q; got %q", want, got)
 	}
