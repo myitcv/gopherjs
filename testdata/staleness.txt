@@ -5,6 +5,22 @@ env HOME=$WORK/home
 mkdir $HOME
 env GOPATH=$HOME/go
 
+# gopherjs run
+cp blah/blah.go.fish blah/blah.go
+gopherjs run -v main.go
+stdout '^Today we will eat fish$'
+stderr '^Cache miss for main$'
+gopherjs run -v main.go
+stdout '^Today we will eat fish$'
+stderr '^Cache miss for main$'
+cp blah/blah.go.chips blah/blah.go
+gopherjs run -v main.go
+stdout '^Today we will eat chips$'
+stderr '^Cache miss for main$'
+gopherjs run -v --tags thin main.go
+stdout '^Today we will eat thin chips$'
+stderr '^Cache miss for main$'
+
 # gopherjs test
 cp blah/blah.go.fish blah/blah.go
 cp main_test.go.fish main_test.go
@@ -15,19 +31,6 @@ cp blah/blah.go.chips blah/blah.go
 cp main_test.go.chips main_test.go
 gopherjs test
 stdout '^chips$'
-! stderr .+
-
-# gopherjs run
-cp blah/blah.go.fish blah/blah.go
-gopherjs run main.go
-stdout '^Today we will eat fish$'
-! stderr .+
-cp blah/blah.go.chips blah/blah.go
-gopherjs run main.go
-stdout '^Today we will eat chips$'
-! stderr .+
-gopherjs run --tags thin main.go
-stdout '^Today we will eat thin chips$'
 ! stderr .+
 
 # gopherjs build

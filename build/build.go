@@ -288,7 +288,7 @@ func ImportDir(dir string, mode build.ImportMode, installSuffix string, buildTag
 // as an existing file from the standard library). For all identifiers that exist
 // in the original AND the overrides, the original identifier in the AST gets
 // replaced by `_`. New identifiers that don't exist in original package get added.
-func parseAndAugment(bctx *build.Context, pkg *build.Package, isTest bool, fileSet *token.FileSet) ([]*ast.File, error) {
+func parseAndAugment(bctx *build.Context, pkg *build.Package, isTest bool, fileSet *token.FileSet, hw io.Writer) ([]*ast.File, error) {
 	var files []*ast.File
 	replacedDeclNames := make(map[string]bool)
 	funcName := func(d *ast.FuncDecl) string {
@@ -369,11 +369,20 @@ func parseAndAugment(bctx *build.Context, pkg *build.Package, isTest bool, fileS
 			if err != nil {
 				panic(err)
 			}
-			file, err := parser.ParseFile(fileSet, fullPath, r, parser.ParseComments)
+			rbyts, err := ioutil.ReadAll(r)
+			r.Close()
+			if err != nil {
+				return nil, fmt.Errorf("failed to read native file %v: %v", fullPath, err)
+			}
+			if hw != nil {
+				fmt.Fprintf(hw, "file: %v\n", fullPath)
+				fmt.Fprintf(hw, "%s\n", rbyts)
+				fmt.Fprintf(hw, "%d bytes\n", len(rbyts))
+			}
+			file, err := parser.ParseFile(fileSet, fullPath, rbyts, parser.ParseComments)
 			if err != nil {
 				panic(err)
 			}
-			r.Close()
 			for _, decl := range file.Decls {
 				switch d := decl.(type) {
 				case *ast.FuncDecl:
@@ -407,8 +416,17 @@ func parseAndAugment(bctx *build.Context, pkg *build.Package, isTest bool, fileS
 		if err != nil {
 			return nil, err
 		}
-		file, err := parser.ParseFile(fileSet, name, r, parser.ParseComments)
+		rbyts, err := ioutil.ReadAll(r)
 		r.Close()
+		if err != nil {
+			return nil, err
+		}
+		if hw != nil {
+			fmt.Fprintf(hw, "file: %v\n", name)
+			fmt.Fprintf(hw, "%s\n", rbyts)
+			fmt.Fprintf(hw, "%d bytes\n", len(rbyts))
+		}
+		file, err := parser.ParseFile(fileSet, name, rbyts, parser.ParseComments)
 		if err != nil {
 			if list, isList := err.(scanner.ErrorList); isList {
 				if len(list) > 10 {
@@ -697,22 +715,126 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 		return archive, nil
 	}
 
-	archive, pkgHash, err := s.checkCache(pkg)
-	if archive != nil || err != nil {
-		return archive, err
+	var pkgHash *cache.Hash
+	var hw io.Writer
+	var hashDebugOut *bytes.Buffer
+
+	// We never cache main or test packages because of the "hack" used to run
+	// arbitrary files and some legacy (at the time of writing) unknown reason
+	// for test packages.
+	//
+	// Where we do cache an archive, build up a hash that represents a complete
+	// description of a repeatable computation (command line, environment
+	// variables, input file contents, executable contents). This therefore
+	// needs to be a stable computation.  The iteration through imports is, by
+	// definition, stable, because those imports are ordered.
+	if !(pkg.IsCommand() || pkg.IsTest) {
+		pkgHash = cache.NewHash("## build " + pkg.ImportPath)
+		hw = pkgHash
+		if hashDebug {
+			hashDebugOut = new(bytes.Buffer)
+			hw = io.MultiWriter(hashDebugOut, pkgHash)
+		}
+	}
+
+	if hw != nil {
+		fmt.Fprintf(hw, "compiler binary hash: %v\n", compilerBinaryHash)
+
+		orderedBuildTags := append([]string{}, s.options.BuildTags...)
+		sort.Strings(orderedBuildTags)
+
+		fmt.Fprintf(hw, "build tags: %v\n", strings.Join(orderedBuildTags, ","))
+
+		for _, importedPkgPath := range pkg.Imports {
+			// Ignore all imports that aren't mentioned in import specs of pkg. For
+			// example, this ignores imports such as runtime/internal/sys and
+			// runtime/internal/atomic; nobody explicitly adds such imports to their
+			// packages, they are automatically added by the Go tool.
+			//
+			// TODO perhaps there is a cleaner way of doing this?
+			ignored := true
+			for _, pos := range pkg.ImportPos[importedPkgPath] {
+				importFile := filepath.Base(pos.Filename)
+				for _, file := range pkg.GoFiles {
+					if importFile == file {
+						ignored = false
+						break
+					}
+				}
+				if !ignored {
+					break
+				}
+			}
+
+			if importedPkgPath == "unsafe" || ignored {
+				continue
+			}
+
+			_, importedArchive, err := s.buildImportPathWithSrcDir(importedPkgPath, s.wd)
+			if err != nil {
+				return nil, err
+			}
+
+			fmt.Fprintf(hw, "import: %v\n", importedPkgPath)
+			fmt.Fprintf(hw, "  hash: %#x\n", importedArchive.Hash)
+		}
+	}
+
+	fset := token.NewFileSet()
+	files, err := parseAndAugment(s.bctx, pkg.Package, pkg.IsTest, fset, hw)
+	if err != nil {
+		return nil, err
+	}
+
+	if hw != nil {
+		for _, name := range pkg.JSFiles {
+			hashFile := func() error {
+				fp := filepath.Join(pkg.Dir, name)
+				file, err := s.bctx.OpenFile(fp)
+				if err != nil {
+					return fmt.Errorf("failed to open %v: %v", fp, err)
+				}
+				defer file.Close()
+				fmt.Fprintf(hw, "file: %v\n", fp)
+				n, err := io.Copy(hw, file)
+				if err != nil {
+					return fmt.Errorf("failed to hash file contents: %v", err)
+				}
+				fmt.Fprintf(hw, "%d bytes\n", n)
+				return nil
+			}
+
+			if err := hashFile(); err != nil {
+				return nil, fmt.Errorf("failed to hash file %v: %v", name, err)
+			}
+		}
+
+		if hashDebug {
+			fmt.Printf("%s", hashDebugOut.String())
+		}
+
+		// At this point we have a complete Hash. Hence we can check the Cache to see whether
+		// we already have an archive for this key.
+
+		if objFilePath, _, err := s.buildCache.GetFile(pkgHash.Sum()); err == nil {
+			// Try to open objFile; we are not guaranteed it will still be available
+			objFile, err := os.Open(objFilePath)
+			if err == nil {
+				archive, err := compiler.ReadArchive(pkg.PkgObj, pkg.ImportPath, objFile, s.Types)
+				objFile.Close()
+				if err == nil {
+					s.Archives[pkg.ImportPath] = archive
+					return archive, nil
+				}
+			}
+		}
 	}
 
 	// At this point, for whatever reason, we were unable to read a build-cached archive.
 	// So we need to build one.
 
 	if s.options.Verbose {
-		fmt.Printf("Cache miss for %v\n", pkg.ImportPath)
-	}
-
-	fileSet := token.NewFileSet()
-	files, err := parseAndAugment(s.bctx, pkg.Package, pkg.IsTest, fileSet)
-	if err != nil {
-		return nil, err
+		fmt.Fprintf(os.Stderr, "Cache miss for %v\n", pkg.ImportPath)
 	}
 
 	// TODO: localImportPathCache is probably redundent given s.Archives
@@ -731,7 +853,7 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 			return archive, nil
 		},
 	}
-	archive, err = compiler.Compile(pkg.ImportPath, files, fileSet, importContext, s.options.Minify)
+	archive, err := compiler.Compile(pkg.ImportPath, files, fset, importContext, s.options.Minify)
 	if err != nil {
 		return nil, err
 	}
@@ -765,132 +887,6 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 	}
 
 	return archive, nil
-}
-
-// checkCache returns the *compiler.Archive for pkg if it is present in the build cache. The *cache.Hash
-// for pkg is returned for all non-main packages.
-func (s *Session) checkCache(pkg *PackageData) (*compiler.Archive, *cache.Hash, error) {
-	// We never cache main packages because of the "hack" used to run arbitrary files.
-	if pkg.IsCommand() {
-		return nil, nil, nil
-	}
-
-	// Build up a hash that represents a complete description of a repeatable
-	// computation (command line, environment variables, input file contents,
-	// executable contents). This therefore needs to be a stable computation.
-	// The iteration through imports is, by definition, stable, because those
-	// imports are ordered.
-	//
-	// We then use this hash value as a cache.ActionID
-
-	// staleness. Set hashDebug to see this in action. The format is:
-	//
-	// ## <package>
-	// compiler binary hash: 0x519d22c6ab65a950f5b6278e4d65cb75dbd3a7eb1cf16e976a40b9f1febc0446
-	// build tags: <list of build tags>
-	// import: <import path>
-	//   hash: 0xb966d7680c1c8ca75026f993c153aff0102dc9551f314e5352043187b5f9c9a6
-	// ...
-	//
-	// file: <file path>
-	// <file contents>
-	// N bytes
-	// ...
-
-	pkgHash := cache.NewHash("## build " + pkg.ImportPath)
-	var hw io.Writer = pkgHash
-	var hashDebugOut *bytes.Buffer
-	if hashDebug {
-		hashDebugOut = new(bytes.Buffer)
-		hw = io.MultiWriter(hashDebugOut, pkgHash)
-	}
-
-	fmt.Fprintf(hw, "compiler binary hash: %v\n", compilerBinaryHash)
-
-	orderedBuildTags := append([]string{}, s.options.BuildTags...)
-	sort.Strings(orderedBuildTags)
-
-	fmt.Fprintf(hw, "build tags: %v\n", strings.Join(orderedBuildTags, ","))
-
-	for _, importedPkgPath := range pkg.Imports {
-		// Ignore all imports that aren't mentioned in import specs of pkg. For
-		// example, this ignores imports such as runtime/internal/sys and
-		// runtime/internal/atomic; nobody explicitly adds such imports to their
-		// packages, they are automatically added by the Go tool.
-		//
-		// TODO perhaps there is a cleaner way of doing this?
-		ignored := true
-		for _, pos := range pkg.ImportPos[importedPkgPath] {
-			importFile := filepath.Base(pos.Filename)
-			for _, file := range pkg.GoFiles {
-				if importFile == file {
-					ignored = false
-					break
-				}
-			}
-			if !ignored {
-				break
-			}
-		}
-
-		if importedPkgPath == "unsafe" || ignored {
-			continue
-		}
-
-		_, importedArchive, err := s.buildImportPathWithSrcDir(importedPkgPath, s.wd)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		fmt.Fprintf(hw, "import: %v\n", importedPkgPath)
-		fmt.Fprintf(hw, "  hash: %#x\n", importedArchive.Hash)
-	}
-
-	for _, name := range append(pkg.GoFiles, pkg.JSFiles...) {
-		hashFile := func() error {
-			fp := filepath.Join(pkg.Dir, name)
-			file, err := s.bctx.OpenFile(fp)
-			if err != nil {
-				return fmt.Errorf("failed to open %v: %v", fp, err)
-			}
-			defer file.Close()
-			fmt.Fprintf(hw, "file: %v\n", fp)
-			n, err := io.Copy(hw, file)
-			if err != nil {
-				return fmt.Errorf("failed to hash file contents: %v", err)
-			}
-			fmt.Fprintf(hw, "%d bytes\n", n)
-			return nil
-		}
-
-		if err := hashFile(); err != nil {
-			return nil, nil, fmt.Errorf("failed to hash file %v: %v", name, err)
-		}
-	}
-
-	if hashDebug {
-		fmt.Printf("%s", hashDebugOut.String())
-	}
-
-	// At this point we have a complete Hash. Hence we can check the Cache to see whether
-	// we already have an archive for this key.
-
-	if objFilePath, _, err := s.buildCache.GetFile(pkgHash.Sum()); err == nil {
-		// Try to open objFile; we are not guaranteed it will still be available
-		objFile, err := os.Open(objFilePath)
-		if err != nil {
-			return nil, pkgHash, nil
-		}
-
-		archive, err := compiler.ReadArchive(pkg.PkgObj, pkg.ImportPath, objFile, s.Types)
-		objFile.Close()
-		if err == nil {
-			s.Archives[pkg.ImportPath] = archive
-			return archive, pkgHash, nil
-		}
-	}
-
-	return nil, pkgHash, nil
 }
 
 func (s *Session) WriteCommandPackage(archive *compiler.Archive, pkgObj string) error {
