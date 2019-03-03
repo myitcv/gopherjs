@@ -16,6 +16,16 @@ import (
 	"github.com/rogpeppe/go-internal/module"
 )
 
+// This is a convenience tool for writing stub files to testdata/mod/* for the modules required
+// by GopherJS. Because a number of our tests in testdata/*.txt depend on importing
+// github.com/gopherjs/gopherjs/js, this requires us to resolve github.com/gopherjs/gopherjs.
+// At which point, when testing in module mode, we need to be able to resolve the go.mod files
+// for the modules we require. Note that github.com/gopherjs/gopherjs/js does not import anything
+// from these requirements; it's just that the modules themselves need to resolve.
+//
+// There is an argument that github.com/gopherjs/gopherjs/js should be a module in and of itself,
+// but we park that for now.
+
 func main() {
 	flag.Parse()
 

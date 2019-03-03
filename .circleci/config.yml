@@ -70,13 +70,13 @@ jobs:
 
           # this gives us the repo-local binaries we require
           npm install
-      - run: go install github.com/gopherjs/gopherjs
-      - run: go generate github.com/gopherjs/gopherjs/compiler/prelude
+      - run: go generate ./...
       - run: go mod tidy && go list all > /dev/null # https://github.com/golang/go/issues/27868#issuecomment-431413621
       - run: go run genmodstubbs.go
       - run: git diff
       - run: diff -u <(echo -n) <(git status --porcelain)
       - run: diff -u <(echo -n) <(gofmt -d .)
+      - run: go install github.com/gopherjs/gopherjs
       - run: go vet .
       - run: go vet $(go list ./... | grep -v github.com/gopherjs/gopherjs/tests)
       - run: diff -u <(echo "github.com/gopherjs/gopherjs/compiler/natives") <(go list ./compiler/natives/...)
