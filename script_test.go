@@ -62,6 +62,7 @@ func TestScripts(t *testing.T) {
 		},
 		Setup: func(e *testscript.Env) error {
 			e.Vars = append(e.Vars,
+				"GONOSUMDB=*",
 				"NODE_PATH="+os.Getenv("NODE_PATH"),
 				"GOPROXY="+proxyURL,
 				"SELF="+wd,

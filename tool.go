@@ -470,7 +470,7 @@ func main1() int {
 
 				importContext := &compiler.ImportContext{
 					Packages: s.Types,
-					Import: func(path string) (*compiler.Archive, error) {
+					ImportFrom: func(path, dir string) (*compiler.Archive, error) {
 						if path == pkg.ImportPath || path == pkg.ImportPath+"_test" {
 							return s.Archives[path], nil
 						}
@@ -478,7 +478,7 @@ func main1() int {
 						return arc, err
 					},
 				}
-				mainPkgArchive, err := compiler.Compile("main", []*ast.File{mainFile}, fset, importContext, options.Minify)
+				mainPkgArchive, err := compiler.Compile("main", "", []*ast.File{mainFile}, fset, importContext, options.Minify)
 				if err != nil {
 					return err
 				}

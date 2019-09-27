@@ -18,3 +18,5 @@ require (
 
 // branch: master (latest)
 replace github.com/shurcooL/vfsgen => github.com/myitcv/vfsgen v0.0.1
+
+go 1.13

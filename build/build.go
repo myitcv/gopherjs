@@ -153,6 +153,15 @@ func (s *Session) Import(path string, mode build.ImportMode, installSuffix strin
 	return s.importWithSrcDir(*bctx, path, wd, mode, installSuffix)
 }
 
+func (s *Session) resolveImportPath(path, dir string) string {
+	if im, ok := s.modImportMap[dir]; ok {
+		if ip, ok := im[path]; ok {
+			path = ip
+		}
+	}
+	return path
+}
+
 func (s *Session) importWithSrcDir(bctx build.Context, path string, srcDir string, mode build.ImportMode, installSuffix string) (*PackageData, error) {
 	// bctx is passed by value, so it can be modified here.
 	var isVirtual bool
@@ -191,13 +200,14 @@ func (s *Session) importWithSrcDir(bctx build.Context, path string, srcDir strin
 			return nil, err
 		}
 	} else {
+		path = s.resolveImportPath(path, srcDir)
 		dir, ok := s.modLookup[path]
 		if !ok {
 			if path == "syscall/js" {
 				mode |= build.FindOnly
 				dir = filepath.Join(runtime.GOROOT(), "src", "syscall", "js")
 			} else {
-				return nil, fmt.Errorf("failed to find import directory for %v", path)
+				return nil, fmt.Errorf("failed to find import directory for %v in %v", path, srcDir)
 			}
 		}
 
@@ -205,7 +215,9 @@ func (s *Session) importWithSrcDir(bctx build.Context, path string, srcDir strin
 		// anything with go list; we've already done that work.
 		pkg, err = bctx.ImportDir(dir, mode|build.IgnoreVendor)
 		if err != nil {
-			return nil, fmt.Errorf("build context ImportDir failed: %v", err)
+			if _, ok := err.(*build.NoGoError); !ok || path != "syscall/js" {
+				return nil, fmt.Errorf("build context ImportDir failed: %v", err)
+			}
 		}
 		// because ImportDir doesn't know the ImportPath, we need to set
 		// certain things manually
@@ -224,7 +236,7 @@ func (s *Session) importWithSrcDir(bctx build.Context, path string, srcDir strin
 		pkg.GoFiles = []string{"error.go"}
 	case "runtime/internal/sys":
 		pkg.GoFiles = []string{fmt.Sprintf("zgoos_%s.go", bctx.GOOS), "stubs.go", "zversion.go"}
-	case "runtime/pprof":
+	case "runtime/pprof", "internal/reflectlite":
 		pkg.GoFiles = nil
 	case "internal/poll":
 		pkg.GoFiles = exclude(pkg.GoFiles, "fd_poll_runtime.go")
@@ -567,6 +579,11 @@ type Session struct {
 	// a nil value implies we are not in module mode
 	modLookup map[string]string
 
+	// modImportMap is the information contained in the .ImportMap
+	// field for a given package, i.e. the final resolved import paths
+	// for packages
+	modImportMap map[string]map[string]string
+
 	// map of module path
 	mods map[string]string
 }
@@ -652,7 +669,7 @@ func (s *Session) determineModLookup(tests bool, imports []string) error {
 	imports = append(imports, "runtime", "github.com/gopherjs/gopherjs/js", "github.com/gopherjs/gopherjs/nosync")
 
 	var stdout, stderr bytes.Buffer
-	golistCmd := exec.Command("go", "list", "-e", "-deps", `-f={{if or (eq .ForTest "") (eq .ForTest "`+imports[0]+`")}}{ {{with .Error}}"Error": "{{.Err}}",{{end}} "ImportPath": "{{.ImportPath}}", "Dir": "{{.Dir}}"{{with .Module}}, "Module": {"Path": "{{.Path}}", "Dir": "{{.Dir}}"}{{end}}}{{end}}`)
+	golistCmd := exec.Command("go", "list", "-e", "-deps", "-json")
 	if tests {
 		golistCmd.Args = append(golistCmd.Args, "-test")
 	}
@@ -670,16 +687,21 @@ func (s *Session) determineModLookup(tests bool, imports []string) error {
 	dec := json.NewDecoder(&stdout)
 
 	s.modLookup = make(map[string]string)
+	s.modImportMap = make(map[string]map[string]string)
 	s.mods = make(map[string]string)
 
 	for {
 		var entry struct {
-			Error      string
+			ForTest    string
 			ImportPath string
 			Dir        string
+			ImportMap  map[string]string
 			Module     struct {
 				Path string
 				Dir  string
+			}
+			Error struct {
+				Err string
 			}
 		}
 
@@ -689,6 +711,9 @@ func (s *Session) determineModLookup(tests bool, imports []string) error {
 			}
 			return fmt.Errorf("failed to decode list output: %v\n%s", err, stdout.Bytes())
 		}
+		if entry.ForTest != "" && entry.ForTest != imports[0] {
+			continue
+		}
 
 		// If a dependency relies on syscall/js we have a problem. All files
 		// in syscall/js are build constrained to GOOS=js GOARCH=wasm. Hence
@@ -696,18 +721,21 @@ func (s *Session) determineModLookup(tests bool, imports []string) error {
 		// because we're not building for that target. Hence we need to more
 		// gracefully handle errors. We therefore report all errors _except_
 		// the failure to load syscall/js. WARNING - gross hack follows
-		if entry.Error != "" {
+		if entry.Error.Err != "" {
 			msg := fmt.Sprintf("build constraints exclude all Go files in " + filepath.Join(runtime.GOROOT(), "src", "syscall", "js"))
-			if !strings.HasSuffix(entry.Error, msg) {
+			if !strings.HasSuffix(entry.Error.Err, msg) {
 				return fmt.Errorf("failed to resolve dependencies: %v", entry.Error)
 			}
 		}
 
 		ipParts := strings.Split(entry.ImportPath, " ")
-		entry.ImportPath = ipParts[0]
+		if ipParts[0] == "internal/testenv" {
+			entry.ImportPath = ipParts[0]
+		}
 
 		s.modLookup[entry.ImportPath] = entry.Dir
 		s.mods[entry.Module.Path] = entry.Module.Dir
+		s.modImportMap[entry.Dir] = entry.ImportMap
 	}
 
 	return nil
@@ -866,6 +894,7 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 	}
 
 	if hw != nil {
+		fmt.Fprintf(hw, "package dir: %v\n", pkg.Dir)
 		fmt.Fprintf(hw, "compiler binary hash: %v\n", compilerBinaryHash)
 
 		orderedBuildTags := append([]string{}, s.options.BuildTags...)
@@ -898,7 +927,7 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 				continue
 			}
 
-			_, importedArchive, err := s.buildImportPathWithSrcDir(importedPkgPath, s.wd)
+			_, importedArchive, err := s.buildImportPathWithSrcDir(importedPkgPath, pkg.Dir)
 			if err != nil {
 				return nil, err
 			}
@@ -968,11 +997,11 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 	localImportPathCache := make(map[string]*compiler.Archive)
 	importContext := &compiler.ImportContext{
 		Packages: s.Types,
-		Import: func(path string) (*compiler.Archive, error) {
+		ImportFrom: func(path, dir string) (*compiler.Archive, error) {
 			if archive, ok := localImportPathCache[path]; ok {
 				return archive, nil
 			}
-			_, archive, err := s.buildImportPathWithSrcDir(path, s.wd)
+			_, archive, err := s.buildImportPathWithSrcDir(path, dir)
 			if err != nil {
 				return nil, err
 			}
@@ -980,7 +1009,7 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 			return archive, nil
 		},
 	}
-	archive, err := compiler.Compile(pkg.ImportPath, files, fset, importContext, s.options.Minify)
+	archive, err := compiler.Compile(pkg.ImportPath, pkg.Dir, files, fset, importContext, s.options.Minify)
 	if err != nil {
 		return nil, err
 	}
