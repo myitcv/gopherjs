@@ -32,6 +32,7 @@ import (
 	gbuild "github.com/gopherjs/gopherjs/build"
 	"github.com/gopherjs/gopherjs/compiler"
 	"github.com/gopherjs/gopherjs/internal/sysutil"
+	"github.com/kr/pretty"
 	"github.com/neelance/sourcemap"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -401,66 +402,25 @@ func main1() int {
 				}
 				defer s.Cleanup()
 
-				pkg, err := s.Import(pkgPath, 0, "", options.BuildTags)
+				testPkgPath := pkgPath + ".test"
+
+				pkg, err := s.Resolve(testPkgPath)
 				if err != nil {
 					return err
 				}
+				fmt.Printf("%v\n", pretty.Sprint(pkg))
 
-				if len(pkg.TestGoFiles) == 0 && len(pkg.XTestGoFiles) == 0 {
-					fmt.Printf("?   \t%s\t[no test files]\n", pkg.ImportPath)
-					continue
+				if len(pkg.GoFiles) != 1 {
+					return fmt.Errorf("failed to resolve single test file for %v", testPkgPath)
 				}
 
-				tests := &testFuncs{BuildContext: s.BuildContext(), Package: pkg.Package}
-				collectTests := func(testPkg *gbuild.PackageData, testPkgName string, needVar *bool) error {
-					if testPkgName == "_test" {
-						for _, file := range pkg.TestGoFiles {
-							if err := tests.load(pkg.Package.Dir, file, testPkgName, &tests.ImportTest, &tests.NeedTest); err != nil {
-								return err
-							}
-						}
-					} else {
-						for _, file := range pkg.XTestGoFiles {
-							if err := tests.load(pkg.Package.Dir, file, "_xtest", &tests.ImportXtest, &tests.NeedXtest); err != nil {
-								return err
-							}
-						}
-					}
-					// this call is simply used for its side effect of populating s.Archives
-					// which is referenced below int he test main package's import resolution
-					_, err := s.BuildPackage(testPkg)
-					return err
-				}
+				testMainFile := pkg.GoFiles[0]
 
-				if err := collectTests(&gbuild.PackageData{
-					Package: &build.Package{
-						ImportPath: pkg.ImportPath,
-						Dir:        pkg.Dir,
-						GoFiles:    append(pkg.GoFiles, pkg.TestGoFiles...),
-						Imports:    append(pkg.Imports, pkg.TestImports...),
-					},
-					IsTest:  true,
-					JSFiles: pkg.JSFiles,
-				}, "_test", &tests.NeedTest); err != nil {
-					return err
+				mainContents, err := ioutil.ReadFile(testMainFile)
+				if err != nil {
+					return fmt.Errorf("failed to read file %v for %v", testMainFile, testPkgPath)
 				}
-
-				if err := collectTests(&gbuild.PackageData{
-					Package: &build.Package{
-						ImportPath: pkg.ImportPath + "_test",
-						Dir:        pkg.Dir,
-						GoFiles:    pkg.XTestGoFiles,
-						Imports:    pkg.XTestImports,
-					},
-					IsTest: true,
-				}, "_xtest", &tests.NeedXtest); err != nil {
-					return err
-				}
-
-				buf := new(bytes.Buffer)
-				if err := testmainTmpl.Execute(buf, tests); err != nil {
-					return err
-				}
+				buf := bytes.NewBuffer(mainContents)
 
 				fset := token.NewFileSet()
 				mainFile, err := parser.ParseFile(fset, "_testmain.go", buf, 0)
@@ -469,22 +429,16 @@ func main1() int {
 				}
 
 				importContext := &compiler.ImportContext{
-					Packages: s.Types,
-					Import: func(path string) (*compiler.Archive, error) {
-						if path == pkg.ImportPath || path == pkg.ImportPath+"_test" {
-							return s.Archives[path], nil
-						}
-						_, arc, err := s.BuildImportPath(path)
-						return arc, err
-					},
+					Packages:   s.Types,
+					ImportFrom: s.CreateImporterFrom(),
 				}
-				mainPkgArchive, err := compiler.Compile("main", []*ast.File{mainFile}, fset, importContext, options.Minify)
+				mainPkgArchive, err := compiler.Compile("main", "", []*ast.File{mainFile}, fset, importContext, options.Minify)
 				if err != nil {
 					return err
 				}
 
 				if *compileOnly && *outputFilename == "" {
-					*outputFilename = pkg.Package.Name + "_test.js"
+					*outputFilename = pkg.Name + "_test.js"
 				}
 
 				var outfile *os.File
@@ -536,7 +490,7 @@ func main1() int {
 				}
 				status := "ok  "
 				start := time.Now()
-				if err := runNode(outfile.Name(), args, runTestDir(pkg), options.Quiet); err != nil {
+				if err := runNode(outfile.Name(), args, pkg.Dir, options.Quiet); err != nil {
 					if _, ok := err.(*exec.ExitError); !ok {
 						return err
 					}

@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/gopherjs/gopherjs/compiler"
@@ -153,10 +154,36 @@ func (s *Session) Import(path string, mode build.ImportMode, installSuffix strin
 	return s.importWithSrcDir(*bctx, path, wd, mode, installSuffix)
 }
 
+func (s *Session) Resolve(path string) (*listPackage, error) {
+	listpkg, ok := s.modLookup[path]
+	if !ok {
+		return nil, fmt.Errorf("failed to resolve package %v", path)
+	}
+	return listpkg, nil
+}
+
+func (s *Session) resolveImportPath(path, dir string) string {
+	if im, ok := s.modImportMap[dir]; ok {
+		if ip, ok := im[path]; ok {
+			path = ip
+		}
+	}
+	return path
+}
+
 func (s *Session) importWithSrcDir(bctx build.Context, path string, srcDir string, mode build.ImportMode, installSuffix string) (*PackageData, error) {
+	// The path value we are passed here might well be the special test version
+	// e.g. when running:
+	//
+	// 	gopherjs test bytes
+	//
+	// we will see path == "runtime/pprof [bytes.test]". Hence our checks below need
+	// to be on what we will refer to as the naked path, i.e. path minus the suffix
+	nakedPath := strings.Split(path, " ")[0]
+
 	// bctx is passed by value, so it can be modified here.
 	var isVirtual bool
-	switch path {
+	switch nakedPath {
 	case "syscall":
 		// syscall needs to use a typical GOARCH like amd64 to pick up definitions for _Socklen, BpfInsn, IFNAMSIZ, Timeval, BpfStat, SYS_FCNTL, Flock_t, etc.
 		bctx.GOARCH = runtime.GOARCH
@@ -191,21 +218,27 @@ func (s *Session) importWithSrcDir(bctx build.Context, path string, srcDir strin
 			return nil, err
 		}
 	} else {
-		dir, ok := s.modLookup[path]
+		path = s.resolveImportPath(path, srcDir)
+		var dir string
+		listpkg, ok := s.modLookup[path]
 		if !ok {
-			if path == "syscall/js" {
+			if nakedPath == "syscall/js" {
 				mode |= build.FindOnly
 				dir = filepath.Join(runtime.GOROOT(), "src", "syscall", "js")
 			} else {
-				return nil, fmt.Errorf("failed to find import directory for %v", path)
+				return nil, fmt.Errorf("failed to find import directory for %v in %v", path, srcDir)
 			}
+		} else {
+			dir = listpkg.Dir
 		}
 
 		// set IgnoreVendor even in module mode to prevent go/build from doing
 		// anything with go list; we've already done that work.
 		pkg, err = bctx.ImportDir(dir, mode|build.IgnoreVendor)
 		if err != nil {
-			return nil, fmt.Errorf("build context ImportDir failed: %v", err)
+			if _, ok := err.(*build.NoGoError); !ok || nakedPath != "syscall/js" {
+				return nil, fmt.Errorf("build context ImportDir failed: %v", err)
+			}
 		}
 		// because ImportDir doesn't know the ImportPath, we need to set
 		// certain things manually
@@ -213,18 +246,18 @@ func (s *Session) importWithSrcDir(bctx build.Context, path string, srcDir strin
 		pkg.ImportPath = path
 		pkg.BinDir = filepath.Join(gp, "bin")
 		if !pkg.IsCommand() {
-			pkg.PkgObj = filepath.Join(gp, "pkg", build.Default.GOOS+"_js", path+".a")
+			pkg.PkgObj = filepath.Join(gp, "pkg", build.Default.GOOS+"_js", nakedPath+".a")
 		}
 	}
 
-	switch path {
+	switch nakedPath {
 	case "os":
 		pkg.GoFiles = excludeExecutable(pkg.GoFiles) // Need to exclude executable implementation files, because some of them contain package scope variables that perform (indirectly) syscalls on init.
 	case "runtime":
 		pkg.GoFiles = []string{"error.go"}
 	case "runtime/internal/sys":
 		pkg.GoFiles = []string{fmt.Sprintf("zgoos_%s.go", bctx.GOOS), "stubs.go", "zversion.go"}
-	case "runtime/pprof":
+	case "runtime/pprof", "internal/reflectlite":
 		pkg.GoFiles = nil
 	case "internal/poll":
 		pkg.GoFiles = exclude(pkg.GoFiles, "fd_poll_runtime.go")
@@ -565,7 +598,12 @@ type Session struct {
 
 	// map of import path to dir for module mode resolution
 	// a nil value implies we are not in module mode
-	modLookup map[string]string
+	modLookup map[string]*listPackage
+
+	// modImportMap is the information contained in the .ImportMap
+	// field for a given package, i.e. the final resolved import paths
+	// for packages
+	modImportMap map[string]map[string]string
 
 	// map of module path
 	mods map[string]string
@@ -652,7 +690,7 @@ func (s *Session) determineModLookup(tests bool, imports []string) error {
 	imports = append(imports, "runtime", "github.com/gopherjs/gopherjs/js", "github.com/gopherjs/gopherjs/nosync")
 
 	var stdout, stderr bytes.Buffer
-	golistCmd := exec.Command("go", "list", "-e", "-deps", `-f={{if or (eq .ForTest "") (eq .ForTest "`+imports[0]+`")}}{ {{with .Error}}"Error": "{{.Err}}",{{end}} "ImportPath": "{{.ImportPath}}", "Dir": "{{.Dir}}"{{with .Module}}, "Module": {"Path": "{{.Path}}", "Dir": "{{.Dir}}"}{{end}}}{{end}}`)
+	golistCmd := exec.Command("go", "list", "-e", "-deps", "-json")
 	if tests {
 		golistCmd.Args = append(golistCmd.Args, "-test")
 	}
@@ -669,25 +707,21 @@ func (s *Session) determineModLookup(tests bool, imports []string) error {
 
 	dec := json.NewDecoder(&stdout)
 
-	s.modLookup = make(map[string]string)
+	s.modLookup = make(map[string]*listPackage)
+	s.modImportMap = make(map[string]map[string]string)
 	s.mods = make(map[string]string)
 
 	for {
-		var entry struct {
-			Error      string
-			ImportPath string
-			Dir        string
-			Module     struct {
-				Path string
-				Dir  string
-			}
-		}
+		var entry listPackage
 
 		if err := dec.Decode(&entry); err != nil {
 			if err == io.EOF {
 				break
 			}
 			return fmt.Errorf("failed to decode list output: %v\n%s", err, stdout.Bytes())
+		}
+		if entry.ForTest != "" && entry.ForTest != imports[0] {
+			continue
 		}
 
 		// If a dependency relies on syscall/js we have a problem. All files
@@ -696,18 +730,18 @@ func (s *Session) determineModLookup(tests bool, imports []string) error {
 		// because we're not building for that target. Hence we need to more
 		// gracefully handle errors. We therefore report all errors _except_
 		// the failure to load syscall/js. WARNING - gross hack follows
-		if entry.Error != "" {
+		if entry.Error != nil && entry.Error.Err != "" {
 			msg := fmt.Sprintf("build constraints exclude all Go files in " + filepath.Join(runtime.GOROOT(), "src", "syscall", "js"))
-			if !strings.HasSuffix(entry.Error, msg) {
+			if !strings.HasSuffix(entry.Error.Err, msg) {
 				return fmt.Errorf("failed to resolve dependencies: %v", entry.Error)
 			}
 		}
 
-		ipParts := strings.Split(entry.ImportPath, " ")
-		entry.ImportPath = ipParts[0]
-
-		s.modLookup[entry.ImportPath] = entry.Dir
-		s.mods[entry.Module.Path] = entry.Module.Dir
+		s.modLookup[entry.ImportPath] = &entry
+		if entry.Module != nil {
+			s.mods[entry.Module.Path] = entry.Module.Dir
+		}
+		s.modImportMap[entry.Dir] = entry.ImportMap
 	}
 
 	return nil
@@ -866,6 +900,7 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 	}
 
 	if hw != nil {
+		fmt.Fprintf(hw, "package dir: %v\n", pkg.Dir)
 		fmt.Fprintf(hw, "compiler binary hash: %v\n", compilerBinaryHash)
 
 		orderedBuildTags := append([]string{}, s.options.BuildTags...)
@@ -898,7 +933,9 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 				continue
 			}
 
-			_, importedArchive, err := s.buildImportPathWithSrcDir(importedPkgPath, s.wd)
+			importedPkgPath = s.resolveImportPath(importedPkgPath, pkg.Dir)
+
+			_, importedArchive, err := s.buildImportPathWithSrcDir(importedPkgPath, pkg.Dir)
 			if err != nil {
 				return nil, err
 			}
@@ -965,22 +1002,11 @@ func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {
 		fmt.Fprintf(os.Stderr, "Cache miss for %v\n", pkg.ImportPath)
 	}
 
-	localImportPathCache := make(map[string]*compiler.Archive)
 	importContext := &compiler.ImportContext{
-		Packages: s.Types,
-		Import: func(path string) (*compiler.Archive, error) {
-			if archive, ok := localImportPathCache[path]; ok {
-				return archive, nil
-			}
-			_, archive, err := s.buildImportPathWithSrcDir(path, s.wd)
-			if err != nil {
-				return nil, err
-			}
-			localImportPathCache[path] = archive
-			return archive, nil
-		},
+		Packages:   s.Types,
+		ImportFrom: s.CreateImporterFrom(),
 	}
-	archive, err := compiler.Compile(pkg.ImportPath, files, fset, importContext, s.options.Minify)
+	archive, err := compiler.Compile(pkg.ImportPath, pkg.Dir, files, fset, importContext, s.options.Minify)
 	if err != nil {
 		return nil, err
 	}
@@ -1107,6 +1133,22 @@ func hasGopathPrefix(file, gopath string) (hasGopathPrefix bool, prefixLen int) 
 	return false, 0
 }
 
+func (s *Session) CreateImporterFrom() func(string, string) (*compiler.Archive, error) {
+	localImportPathCache := make(map[string]*compiler.Archive)
+	return func(path, dir string) (*compiler.Archive, error) {
+		path = s.resolveImportPath(path, dir)
+		if archive, ok := localImportPathCache[path]; ok {
+			return archive, nil
+		}
+		_, archive, err := s.buildImportPathWithSrcDir(path, dir)
+		if err != nil {
+			return nil, err
+		}
+		localImportPathCache[path] = archive
+		return archive, nil
+	}
+}
+
 func (s *Session) WaitForChange() {
 	s.options.PrintSuccess("watching for changes...\n")
 	for {
@@ -1160,4 +1202,88 @@ func ImportPaths(buildTags []string, vs ...string) ([]string, error) {
 	}
 
 	return res, nil
+}
+
+type listPackage struct {
+	Dir           string      // directory containing package sources
+	ImportPath    string      // import path of package in dir
+	ImportComment string      // path in import comment on package statement
+	Name          string      // package name
+	Doc           string      // package documentation string
+	Target        string      // install path
+	Shlib         string      // the shared library that contains this package (only set when -linkshared)
+	Goroot        bool        // is this package in the Go root?
+	Standard      bool        // is this package part of the standard Go library?
+	Stale         bool        // would 'go install' do anything for this package?
+	StaleReason   string      // explanation for Stale==true
+	Root          string      // Go root or Go path dir containing this package
+	ConflictDir   string      // this directory shadows Dir in $GOPATH
+	BinaryOnly    bool        // binary-only package (no longer supported)
+	ForTest       string      // package is only for use in named test
+	Export        string      // file containing export data (when using -export)
+	Module        *listModule // info about package's containing module, if any (can be nil)
+	Match         []string    // command-line patterns matching this package
+	DepOnly       bool        // package is only a dependency, not explicitly listed
+
+	// Source files
+	GoFiles         []string // .go source files (excluding CgoFiles, TestGoFiles, XTestGoFiles)
+	CgoFiles        []string // .go source files that import "C"
+	CompiledGoFiles []string // .go files presented to compiler (when using -compiled)
+	IgnoredGoFiles  []string // .go source files ignored due to build constraints
+	CFiles          []string // .c source files
+	CXXFiles        []string // .cc, .cxx and .cpp source files
+	MFiles          []string // .m source files
+	HFiles          []string // .h, .hh, .hpp and .hxx source files
+	FFiles          []string // .f, .F, .for and .f90 Fortran source files
+	SFiles          []string // .s source files
+	SwigFiles       []string // .swig files
+	SwigCXXFiles    []string // .swigcxx files
+	SysoFiles       []string // .syso object files to add to archive
+	TestGoFiles     []string // _test.go files in package
+	XTestGoFiles    []string // _test.go files outside package
+
+	// Cgo directives
+	CgoCFLAGS    []string // cgo: flags for C compiler
+	CgoCPPFLAGS  []string // cgo: flags for C preprocessor
+	CgoCXXFLAGS  []string // cgo: flags for C++ compiler
+	CgoFFLAGS    []string // cgo: flags for Fortran compiler
+	CgoLDFLAGS   []string // cgo: flags for linker
+	CgoPkgConfig []string // cgo: pkg-config names
+
+	// Dependency information
+	Imports      []string          // import paths used by this package
+	ImportMap    map[string]string // map from source import to ImportPath (identity entries omitted)
+	Deps         []string          // all (recursively) imported dependencies
+	TestImports  []string          // imports from TestGoFiles
+	XTestImports []string          // imports from XTestGoFiles
+
+	// Error information
+	Incomplete bool                // this package or a dependency has an error
+	Error      *listPackageError   // error loading package
+	DepsErrors []*listPackageError // errors loading dependencies
+}
+
+type listPackageError struct {
+	ImportStack []string // shortest path from package named on command line to this one
+	Pos         string   // position of error (if present, file:line:col)
+	Err         string   // the error itself
+}
+
+type listModule struct {
+	Path      string           // module path
+	Version   string           // module version
+	Versions  []string         // available module versions (with -versions)
+	Replace   *listModule      // replaced by this module
+	Time      *time.Time       // time version was created
+	Update    *listModule      // available update, if any (with -u)
+	Main      bool             // is this the main module?
+	Indirect  bool             // is this module only an indirect dependency of main module?
+	Dir       string           // directory holding files for this module, if any
+	GoMod     string           // path to go.mod file for this module, if any
+	GoVersion string           // go version used in module
+	Error     *listModuleError // error loading module
+}
+
+type listModuleError struct {
+	Err string // the error itself
 }

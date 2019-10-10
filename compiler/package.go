@@ -91,8 +91,8 @@ type flowData struct {
 }
 
 type ImportContext struct {
-	Packages map[string]*types.Package
-	Import   func(string) (*Archive, error)
+	Packages   map[string]*types.Package
+	ImportFrom func(path, dir string) (*Archive, error)
 }
 
 // packageImporter implements go/types.Importer interface.
@@ -102,11 +102,14 @@ type packageImporter struct {
 }
 
 func (pi packageImporter) Import(path string) (*types.Package, error) {
+	panic("should not be here")
+}
+func (pi packageImporter) ImportFrom(path, dir string, mode types.ImportMode) (*types.Package, error) {
 	if path == "unsafe" {
 		return types.Unsafe, nil
 	}
 
-	a, err := pi.importContext.Import(path)
+	a, err := pi.importContext.ImportFrom(path, dir)
 
 	if err != nil {
 		if *pi.importError == nil {
@@ -119,7 +122,7 @@ func (pi packageImporter) Import(path string) (*types.Package, error) {
 	return pi.importContext.Packages[a.ImportPath], nil
 }
 
-func Compile(importPath string, files []*ast.File, fileSet *token.FileSet, importContext *ImportContext, minify bool) (*Archive, error) {
+func Compile(importPath, dir string, files []*ast.File, fileSet *token.FileSet, importContext *ImportContext, minify bool) (*Archive, error) {
 	typesInfo := &types.Info{
 		Types:      make(map[ast.Expr]types.TypeAndValue),
 		Defs:       make(map[*ast.Ident]types.Object),
@@ -180,7 +183,7 @@ func Compile(importPath string, files []*ast.File, fileSet *token.FileSet, impor
 	}
 
 	isBlocking := func(f *types.Func) bool {
-		archive, err := importContext.Import(f.Pkg().Path())
+		archive, err := importContext.ImportFrom(f.Pkg().Path(), dir)
 		if err != nil {
 			panic(err)
 		}

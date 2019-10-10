@@ -3,6 +3,7 @@ module github.com/gopherjs/gopherjs
 require (
 	github.com/fsnotify/fsnotify v1.4.7
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
+	github.com/kr/pretty v0.1.0
 	github.com/neelance/astrewrite v0.0.0-20160511093645-99348263ae86
 	github.com/neelance/sourcemap v0.0.0-20151028013722-8c68805598ab
 	github.com/rogpeppe/go-internal v1.0.1-alpha.1
@@ -18,3 +19,5 @@ require (
 
 // branch: master (latest)
 replace github.com/shurcooL/vfsgen => github.com/myitcv/vfsgen v0.0.1
+
+go 1.13

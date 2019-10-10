@@ -679,7 +679,7 @@ func (c *funcContext) translateAssign(lhs, rhs ast.Expr, define bool) string {
 	}
 
 	isReflectValue := false
-	if named, ok := lhsType.(*types.Named); ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "reflect" && named.Obj().Name() == "Value" {
+	if named, ok := lhsType.(*types.Named); ok && named.Obj().Pkg() != nil && (named.Obj().Pkg().Path() == "reflect" || named.Obj().Pkg().Path() == "internal/reflectlite") && named.Obj().Name() == "Value" {
 		isReflectValue = true
 	}
 	if !isReflectValue { // this is a performance hack, but it is safe since reflect.Value has no exported fields and the reflect package does not violate this assumption
