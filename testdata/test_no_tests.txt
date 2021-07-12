@@ -1,0 +1,20 @@
+env HOME=$WORK/home
+mkdir $HOME
+env GOPATH=$WORK/go
+go mod edit -require=github.com/gopherjs/gopherjs@v0.0.0 -replace=github.com/gopherjs/gopherjs=$SELF
+
+go mod download
+
+# go
+! go test
+
+# gopherjs
+! gopherjs test
+
+-- go.mod --
+module mod
+
+-- blah.go --
+package blah
+
+var _ = asdf
